@@ -488,30 +488,16 @@ async function sendMessage(text) {
 
   try {
     STATE.abortController = new AbortController();
-    let resp;
-    try {
-      resp = await fetch('https://remarks-motherboard-regards-refrigerator.trycloudflare.com/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history: STATE.messages.slice(-20),
-          session_id: STATE.sessionId,
-        }),
-        signal: STATE.abortController.signal,
-      });
-    } catch {
-      resp = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history: STATE.messages.slice(-20),
-          session_id: STATE.sessionId,
-        }),
-        signal: STATE.abortController.signal,
-      });
-    }
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        history: STATE.messages.slice(-20),
+        session_id: STATE.sessionId,
+      }),
+      signal: STATE.abortController.signal,
+    });
 
     hideTyping();
 
