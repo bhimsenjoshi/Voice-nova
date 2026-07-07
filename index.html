@@ -488,16 +488,30 @@ async function sendMessage(text) {
 
   try {
     STATE.abortController = new AbortController();
-    const resp = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        history: STATE.messages.slice(-20),
-        session_id: STATE.sessionId,
-      }),
-      signal: STATE.abortController.signal,
-    });
+    let resp;
+    try {
+      resp = await fetch('https://flying-frederick-lives-demonstrates.trycloudflare.com/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          history: STATE.messages.slice(-20),
+          session_id: STATE.sessionId,
+        }),
+        signal: STATE.abortController.signal,
+      });
+    } catch {
+      resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          history: STATE.messages.slice(-20),
+          session_id: STATE.sessionId,
+        }),
+        signal: STATE.abortController.signal,
+      });
+    }
 
     hideTyping();
 
