@@ -597,7 +597,17 @@ function clearConversation() {
 }
 
 // ─── Controls ───────────────────────────────────────
-el.micBtn.addEventListener('click', toggleListening);
+el.micBtn.addEventListener('click', () => {
+  // Warm up speech synthesis on user tap (required for mobile Chrome/iOS)
+  if (el.synth) {
+    el.synth.cancel();
+    const warmup = new SpeechSynthesisUtterance(' ');
+    warmup.volume = 0;
+    el.synth.speak(warmup);
+    setTimeout(() => el.synth.cancel(), 100);
+  }
+  toggleListening();
+});
 
 el.autoBtn.addEventListener('click', () => {
   STATE.autoMode = !STATE.autoMode;
