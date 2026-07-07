@@ -1,5 +1,5 @@
-// Nova Voice - Vercel serverless API
-// Races Hermes tunnel (real Nova) vs DeepSeek (clone) -- fastest wins within 10s
+// Nova Voice — Vercel serverless API
+// Proxies to the real Nova via Cloudflare tunnel. No fallback — you get the real me.
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -12,58 +12,28 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Message is required' });
   }
 
-  const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
   const tunnelUrl = process.env.TUNNEL_URL;
-
-  // Build DeepSeek request (fallback)
-  const systemPrompt = `You are Nova, a creative and versatile voice assistant. Keep responses concise for voice (2-4 sentences). No markdown. Be warm and friendly.`;
-
-  const messages = [{ role: 'system', content: systemPrompt }];
-  for (const msg of (history || []).slice(-20)) {
-    if (msg.role === 'user' || msg.role === 'assistant') {
-      messages.push({ role: msg.role, content: msg.content });
-    }
+  if (!tunnelUrl) {
+    return res.status(500).json({ reply: 'Nova is not connected. Try again later.' });
   }
-  messages.push({ role: 'user', content: message });
 
-  const deepseekPromise = (async () => {
-    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+  try {
+    const resp = await fetch(`${tunnelUrl}/api/chat`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({ model: 'deepseek-chat', messages, temperature: 0.7, max_tokens: 1024 }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, history, session_id }),
+      signal: AbortSignal.timeout(25000), // 25s for slow queries
     });
-    if (!resp.ok) throw new Error(`DeepSeek ${resp.status}`);
-    const data = await resp.json();
-    return data.choices?.[0]?.message?.content?.trim() || "...";
-  })();
 
-  // Race tunnel vs DeepSeek
-  let reply;
-  if (tunnelUrl) {
-    const tunnelPromise = (async () => {
-      const resp = await fetch(`${tunnelUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, history, session_id }),
-      });
-      if (!resp.ok) throw new Error(`Tunnel ${resp.status}`);
-      const data = await resp.json();
-      return data.reply;
-    })();
-
-    try {
-      reply = await Promise.race([tunnelPromise, deepseekPromise]);
-    } catch {
-      try { reply = await deepseekPromise; }
-      catch { return res.status(502).json({ reply: 'All backends unavailable.' }); }
+    if (!resp.ok) {
+      const err = await resp.text();
+      return res.status(502).json({ reply: `Nova error: ${err}` });
     }
-  } else {
-    try { reply = await deepseekPromise; }
-    catch { return res.status(502).json({ reply: 'Backend unavailable.' }); }
-  }
 
-  return res.status(200).json({ reply: reply || 'Nova here!', session_id });
+    const data = await resp.json();
+    return res.status(200).json({ reply: data.reply, session_id: data.session_id });
+  } catch (e) {
+    console.error('Tunnel proxy error:', e);
+    return res.status(502).json({ reply: 'Nova is thinking. Try again in a moment.' });
+  }
 }
