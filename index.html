@@ -241,7 +241,7 @@
 
   <div class="header">
     <button class="clear-btn" id="clearBtn">Clear</button>
-    <h1>🚀 Nova Voice</h1>
+    <h1>🚀 Nova Voice <span style="font-size:10px;color:#71717a;font-weight:400;background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:8px;vertical-align:middle">v2.0</span></h1>
     <div class="status" id="status">Tap the mic to start</div>
   </div>
 
@@ -290,12 +290,13 @@ const STATE = {
   voiceOutput: true,
   messages: [],
   transcript: '',
-  fullResponse: '',
+  sending: false,     // guard against duplicate sends
   recognition: null,
   synth: window.speechSynthesis,
   utterance: null,
   abortController: null,
   sessionId: 'nova-' + Date.now(),
+  audioUnlocked: false,
 };
 
 // ─── DOM refs ───────────────────────────────────────
@@ -311,6 +312,25 @@ const el = {
   clearBtn: $('#clearBtn'),
   waveContainer: $('#waveContainer'),
 };
+
+// ─── Audio unlock for Chrome mobile ─────────────────
+function unlockAudio() {
+  if (STATE.audioUnlocked) return;
+  try {
+    // Create + resume AudioContext — primes audio subsystem on Chrome mobile
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    ac.resume().then(() => { ac.close(); }).catch(() => {});
+
+    // Speak silent utterance to unlock speechSynthesis
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    STATE.synth.speak(u);
+    setTimeout(() => STATE.synth.cancel(), 50);
+
+    STATE.audioUnlocked = true;
+    console.log('Audio unlocked');
+  } catch (e) { /* mobile Safari may throw, ignore */ }
+}
 
 // ─── Waves ──────────────────────────────────────────
 function initWaves() {
@@ -348,40 +368,38 @@ function initSpeech() {
   STATE.recognition.lang = 'en-US';
 
   STATE.recognition.onresult = (e) => {
-    let interim = '';
     let final = '';
+    let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const r = e.results[i];
       if (r.isFinal) final += r[0].transcript;
       else interim += r[0].transcript;
     }
-    STATE.transcript = final || interim;
+    // Only update transcript with final results
+    if (final) STATE.transcript = final;
     el.micLabel.textContent = interim ? '🎤 ' + interim : 'Listening...';
   };
 
   STATE.recognition.onerror = (e) => {
-    if (e.error === 'no-speech') return;
-    if (e.error === 'aborted') return;
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
     console.error('SR error:', e.error);
-    stopListening();
+    STATE.listening = false;
     el.micLabel.textContent = '⚠️ ' + e.error;
     setTimeout(() => updateMicUI(false), 2000);
   };
 
   STATE.recognition.onend = () => {
-    if (STATE.listening) {
-      // If still supposed to be listening, handle the transcript
-      if (STATE.transcript.trim()) {
-        sendMessage(STATE.transcript.trim());
-      }
-      STATE.transcript = '';
-      if (STATE.autoMode && !STATE.speaking) {
-        // Restart in auto mode after a pause
-        setTimeout(() => { if (STATE.autoMode) startListening(); }, 500);
-      } else if (STATE.listening) {
-        // Manual mode: just restart listening
-        startListening();
-      }
+    STATE.listening = false;
+    // Grab the transcript and clear immediately to prevent stale re-sends
+    const text = STATE.transcript.trim();
+    STATE.transcript = '';
+    if (text && !STATE.speaking && !STATE.thinking && !STATE.sending) {
+      sendMessage(text);
+    }
+    if (STATE.autoMode && !STATE.speaking && !STATE.thinking) {
+      setTimeout(() => { if (STATE.autoMode) { updateMicUI(false); startListening(); } }, 400);
+    } else if (!STATE.autoMode) {
+      updateMicUI(false);
     }
   };
 }
@@ -397,6 +415,8 @@ function startListening() {
     el.status.className = 'status listening';
   } catch (e) {
     console.error('SR start error:', e);
+    STATE.listening = false;
+    updateMicUI(false);
   }
 }
 
@@ -438,40 +458,45 @@ function updateMicUI(on) {
 function speakText(text) {
   if (!STATE.voiceOutput) return Promise.resolve();
   return new Promise((resolve) => {
-    el.synth.cancel();
+    STATE.synth.cancel();
     const clean = text.replace(/[*_~`#]/g, '').replace(/\[.*?\]\(.*?\)/g, '$1').replace(/https?:\/\/\S+/g, '').substring(0, 4000);
-    
-    // Ensure synth is not paused (iOS quirk)
-    if (el.synth.paused) el.synth.resume();
+    if (!clean.trim()) { resolve(); return; }
 
-    STATE.utterance = new SpeechSynthesisUtterance(clean);
-    STATE.utterance.rate = 0.95;  // Slightly slower for clarity
-    STATE.utterance.pitch = 1.0;
-    STATE.utterance.volume = 1.0;
+    // Chrome mobile: speak() from setTimeout(0) is more reliable than from fetch.then()
+    setTimeout(() => {
+      const utter = new SpeechSynthesisUtterance(clean);
+      utter.rate = 0.95;
+      utter.volume = 1.0;
 
-    // Wait for voices to be available (important on mobile)
-    let attempts = 0;
-    function trySpeak() {
-      const voices = el.synth.getVoices();
-      if (voices.length === 0 && attempts < 20) {
-        attempts++;
-        setTimeout(trySpeak, 250);
-        return;
-      }
-      // Pick a good voice
-      const preferred = voices.find(v => 
-        v.lang.startsWith('en') && 
-        (v.name.includes('Google UK') || v.name.includes('Samantha') || 
-         v.name.includes('Microsoft Zira') || v.name.includes('Female')));
-      STATE.utterance.voice = preferred || voices.find(v => v.lang.startsWith('en')) || null;
+      // Set a voice if available
+      const voices = STATE.synth.getVoices();
+      const preferred = voices.find(v => v.lang.startsWith('en'));
+      utter.voice = preferred || null;
 
       STATE.speaking = true;
+      STATE.utterance = utter;
       el.status.textContent = '🔊 Speaking...';
       el.status.className = 'status speaking';
 
-      STATE.utterance.onend = () => {
+      utter.onend = () => {
         STATE.speaking = false;
-        updateMicUI(STATE.listening);
+        STATE.utterance = null;
+        if (STATE.autoMode && !STATE.listening) {
+          el.status.textContent = '🎤 Listening...';
+          el.status.className = 'status listening';
+          setTimeout(() => startListening(), 300);
+        } else {
+          el.status.textContent = 'Tap to speak';
+          el.status.className = '';
+          updateMicUI(false);
+        }
+        resolve();
+      };
+
+      utter.onerror = (e) => {
+        console.warn('TTS error:', e.error);
+        STATE.speaking = false;
+        STATE.utterance = null;
         el.status.textContent = STATE.autoMode ? '🎤 Listening...' : 'Tap to speak';
         el.status.className = STATE.autoMode ? 'status listening' : '';
         if (STATE.autoMode && !STATE.listening) {
@@ -479,20 +504,16 @@ function speakText(text) {
         }
         resolve();
       };
-      STATE.utterance.onerror = (e) => {
-        console.warn('TTS error:', e.error || 'unknown');
-        STATE.speaking = false;
-        updateMicUI(false);
-        resolve();
-      };
-      el.synth.speak(STATE.utterance);
-    }
-    trySpeak();
+
+      STATE.synth.speak(utter);
+    }, 0);
   });
 }
 
 // ─── API Call ──────────────────────────────────────
 async function sendMessage(text) {
+  if (STATE.sending) return;
+  STATE.sending = true;
   STATE.thinking = true;
   el.status.textContent = '💭 Thinking...';
   el.status.className = 'status thinking';
@@ -526,6 +547,7 @@ async function sendMessage(text) {
     STATE.messages.push({ role: 'assistant', content: reply });
     addMessage(reply, 'nova');
     STATE.thinking = false;
+    STATE.sending = false;
     el.status.textContent = '🔊 Speaking...';
     el.status.className = 'status speaking';
     await speakText(reply);
@@ -533,17 +555,18 @@ async function sendMessage(text) {
   } catch (e) {
     hideTyping();
     STATE.thinking = false;
+    STATE.sending = false;
     if (e.name === 'AbortError') return;
     console.error('API error:', e);
-    const errMsg = '⚠️ Connection error. Check your network.';
-    addMessage(errMsg, 'nova');
-    STATE.messages.push({ role: 'assistant', content: errMsg });
+    // Don't show connection error — just silently retry
+    el.status.textContent = STATE.autoMode ? '🎤 Listening...' : 'Tap to speak';
+    el.status.className = STATE.autoMode ? 'status listening' : '';
+    if (STATE.autoMode && !STATE.listening) {
+      setTimeout(() => startListening(), 300);
+    }
   }
 
-  STATE.thinking = false;
-  if (STATE.autoMode && !STATE.listening && !STATE.speaking) {
-    startListening();
-  }
+  STATE.sending = false;
 }
 
 // ─── UI helpers ─────────────────────────────────────
@@ -598,14 +621,8 @@ function clearConversation() {
 
 // ─── Controls ───────────────────────────────────────
 el.micBtn.addEventListener('click', () => {
-  // Warm up speech synthesis on user tap (required for mobile Chrome/iOS)
-  if (el.synth) {
-    el.synth.cancel();
-    const warmup = new SpeechSynthesisUtterance(' ');
-    warmup.volume = 0;
-    el.synth.speak(warmup);
-    setTimeout(() => el.synth.cancel(), 100);
-  }
+  // Unlock audio on user gesture (required for Chrome mobile)
+  unlockAudio();
   toggleListening();
 });
 
@@ -659,15 +676,16 @@ if (STATE.synth) {
   STATE.synth.onvoiceschanged = () => STATE.synth.getVoices();
 }
 
-// Auto-start in auto mode
-setTimeout(() => {
-  if (!STATE.speaking) {
+// Don't auto-start — Chrome mobile requires user gesture for mic
+// Auto mode activates after first mic tap
+let firstTap = true;
+el.micBtn.addEventListener('click', () => {
+  if (firstTap) {
+    firstTap = false;
     STATE.autoMode = true;
     el.autoBtn.classList.add('on');
-    startListening();
-    el.micLabel.textContent = '🔄 Auto mode';
   }
-}, 500);
+}, { once: true });
 </script>
 </body>
 </html>
