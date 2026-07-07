@@ -1,91 +1,74 @@
-// Nova Voice — Vercel serverless API
-// First tries Hermes tunnel (real Nova), falls back to DeepSeek (clone)
-// TUNNEL_URL env var points to the cloudflared tunnel on the VM
-
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
-
-  const { message, history = [], session_id } = req.body;
-  if (!message || !message.trim()) {
-    return res.status(400).json({ error: 'Message is required' });
-  }
-
-  // Try Hermes tunnel first (the real Nova with memory & tools)
-  const tunnelUrl = process.env.TUNNEL_URL;
-  if (tunnelUrl) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000); // 8s for tunnel
-
-      const tunnelResp = await fetch(`${tunnelUrl}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, history, session_id }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      if (tunnelResp.ok) {
-        const data = await tunnelResp.json();
-        return res.status(200).json({ reply: data.reply, session_id: data.session_id || '' });
-      }
-      console.log('Tunnel returned non-ok:', tunnelResp.status);
-    } catch (err) {
-      console.log('Tunnel unavailable, falling back to DeepSeek:', err.message);
-    }
-  }
-
-  // Fallback: direct DeepSeek API
-  const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-  if (!DEEPSEEK_API_KEY) {
-    return res.status(500).json({ error: 'No API backend available' });
-  }
-
-  const systemPrompt = `You are Nova, a creative and versatile voice assistant. You have a warm, creative, and enthusiastic personality.
-
-Keep responses concise and natural for voice — 2-4 sentences is ideal.
-Avoid markdown formatting, bullet points, and code blocks (this is voice).
-Use casual, friendly language like you're talking to a friend.
-Be enthusiastic and warm.`;
-
-  const messages = [{ role: 'system', content: systemPrompt }];
-  for (const msg of (history || []).slice(-20)) {
-    if (msg.role === 'user' || msg.role === 'assistant') {
-      messages.push({ role: msg.role, content: msg.content });
-    }
-  }
-  messages.push({ role: 'user', content: message });
-
-  try {
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages,
-        temperature: 0.7,
-        max_tokens: 1024,
-        stream: false,
-      }),
-    });
-
-    if (!response.ok) {
-      return res.status(502).json({ reply: 'Sorry, I had trouble reaching my brain. Try again?' });
-    }
-
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content?.trim() ||
-      "Sorry, I didn't quite get that. Could you repeat?";
-
-    return res.status(200).json({ reply, session_id });
-  } catch (err) {
-    console.error('DeepSeek error:', err);
-    return res.status(500).json({ reply: 'Something went wrong. Try again in a moment?' });
-  }
-}
+1|// Nova Voice — Vercel serverless API
+2|// Races Hermes tunnel (real Nova) vs DeepSeek (clone) — fastest wins within 10s
+3|
+4|export default async function handler(req, res) {
+5|  res.setHeader('Access-Control-Allow-Origin', '*');
+6|  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+7|  if (req.method === 'OPTIONS') return res.status(200).end();
+8|  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
+9|
+10|  const { message, history = [], session_id } = req.body;
+11|  if (!message || !message.trim()) {
+12|    return res.status(400).json({ error: 'Message is required' });
+13|  }
+14|
+15|  const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+16|  const tunnelUrl = process.env.TUNNEL_URL;
+17|
+18|  // Build DeepSeek request
+19|  const systemPrompt = `You are Nova, a creative and versatile voice assistant. Keep responses concise for voice (2-4 sentences). No markdown. Be warm and friendly.`;
+20|
+21|  const messages = [{ role: 'system', content: systemPrompt }];
+22|  for (const msg of (history || []).slice(-20)) {
+23|    if (msg.role === 'user' || msg.role === 'assistant') {
+24|      messages.push({ role: msg.role, content: msg.content });
+25|    }
+26|  }
+27|  messages.push({ role: 'user', content: message });
+28|
+29|  const deepseekPromise = (async () => {
+30|    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+31|      method: 'POST',
+32|      headers: {
+33|        'Content-Type': 'application/json',
+34|        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+35|      },
+36|      body: JSON.stringify({ model: 'deepseek-chat', messages, temperature: 0.7, max_tokens: 1024 }),
+37|    });
+38|    if (!resp.ok) throw new Error(`DeepSeek ${resp.status}`);
+39|    const data = await resp.json();
+40|    return data.choices?.[0]?.message?.content?.trim() || "...";
+41|  })();
+42|
+43|  // Race tunnel vs DeepSeek
+44|  let reply, source;
+45|  if (tunnelUrl) {
+46|    const tunnelPromise = (async () => {
+47|      const resp = await fetch(`${tunnelUrl}/api/chat`, {
+48|        method: 'POST',
+49|        headers: { 'Content-Type': 'application/json' },
+50|        body: JSON.stringify({ message, history, session_id }),
+51|      });
+52|      if (!resp.ok) throw new Error(`Tunnel ${resp.status}`);
+53|      const data = await resp.json();
+54|      return data.reply;
+55|    })();
+56|
+57|    try {
+58|      const result = await Promise.race([
+59|        tunnelPromise.then(r => { reply = r; source = 'tunnel'; return r; }),
+60|        deepseekPromise.then(r => { reply = r; source = 'deepseek'; return r; }),
+61|      ]);
+62|    } catch {
+63|      // If both fail, use whichever resolved
+64|      try { reply = await deepseekPromise; source = 'deepseek'; }
+65|      catch { return res.status(502).json({ reply: 'All backends unavailable.' }); }
+66|    }
+67|  } else {
+68|    try { reply = await deepseekPromise; source = 'deepseek'; }
+69|    catch { return res.status(502).json({ reply: 'Backend unavailable.' }); }
+70|  }
+71|
+72|  return res.status(200).json({ reply: reply || 'Nova here! What\'s up?', session_id });
+73|}
+74|
