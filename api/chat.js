@@ -18,7 +18,7 @@ export default async function handler(req, res) {
   if (tunnelUrl) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 25000); // 25s timeout
+      const timeout = setTimeout(() => controller.abort(), 8000); // 8s for tunnel
 
       const tunnelResp = await fetch(`${tunnelUrl}/api/chat`, {
         method: 'POST',
