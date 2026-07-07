@@ -440,40 +440,54 @@ function speakText(text) {
   return new Promise((resolve) => {
     el.synth.cancel();
     const clean = text.replace(/[*_~`#]/g, '').replace(/\[.*?\]\(.*?\)/g, '$1').replace(/https?:\/\/\S+/g, '').substring(0, 4000);
+    
+    // Ensure synth is not paused (iOS quirk)
+    if (el.synth.paused) el.synth.resume();
+
     STATE.utterance = new SpeechSynthesisUtterance(clean);
-    STATE.utterance.rate = 1.0;
+    STATE.utterance.rate = 0.95;  // Slightly slower for clarity
     STATE.utterance.pitch = 1.0;
     STATE.utterance.volume = 1.0;
 
-    // Pick a good voice
-    const voices = el.synth.getVoices();
-    const preferred = voices.find(v => v.lang.startsWith('en') && v.name.includes('Google UK') || v.name.includes('Samantha') || v.name.includes('Microsoft Zira'));
-    if (preferred) STATE.utterance.voice = preferred;
-    else {
-      const en = voices.find(v => v.lang.startsWith('en'));
-      if (en) STATE.utterance.voice = en;
-    }
-
-    STATE.speaking = true;
-    el.status.textContent = '🔊 Speaking...';
-    el.status.className = 'status speaking';
-
-    STATE.utterance.onend = () => {
-      STATE.speaking = false;
-      updateMicUI(STATE.listening);
-      el.status.textContent = STATE.autoMode ? '🎤 Listening...' : 'Tap to speak';
-      el.status.className = STATE.autoMode ? 'status listening' : '';
-      if (STATE.autoMode && !STATE.listening) {
-        setTimeout(() => startListening(), 300);
+    // Wait for voices to be available (important on mobile)
+    let attempts = 0;
+    function trySpeak() {
+      const voices = el.synth.getVoices();
+      if (voices.length === 0 && attempts < 20) {
+        attempts++;
+        setTimeout(trySpeak, 250);
+        return;
       }
-      resolve();
-    };
-    STATE.utterance.onerror = () => {
-      STATE.speaking = false;
-      updateMicUI(false);
-      resolve();
-    };
-    el.synth.speak(STATE.utterance);
+      // Pick a good voice
+      const preferred = voices.find(v => 
+        v.lang.startsWith('en') && 
+        (v.name.includes('Google UK') || v.name.includes('Samantha') || 
+         v.name.includes('Microsoft Zira') || v.name.includes('Female')));
+      STATE.utterance.voice = preferred || voices.find(v => v.lang.startsWith('en')) || null;
+
+      STATE.speaking = true;
+      el.status.textContent = '🔊 Speaking...';
+      el.status.className = 'status speaking';
+
+      STATE.utterance.onend = () => {
+        STATE.speaking = false;
+        updateMicUI(STATE.listening);
+        el.status.textContent = STATE.autoMode ? '🎤 Listening...' : 'Tap to speak';
+        el.status.className = STATE.autoMode ? 'status listening' : '';
+        if (STATE.autoMode && !STATE.listening) {
+          setTimeout(() => startListening(), 300);
+        }
+        resolve();
+      };
+      STATE.utterance.onerror = (e) => {
+        console.warn('TTS error:', e.error || 'unknown');
+        STATE.speaking = false;
+        updateMicUI(false);
+        resolve();
+      };
+      el.synth.speak(STATE.utterance);
+    }
+    trySpeak();
   });
 }
 
