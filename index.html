@@ -177,6 +177,20 @@
     width: 32px; height: 32px; fill: white; display: block; margin: 0 auto;
   }
 
+  /* Skip button */
+  .skip-btn {
+    position: absolute; top: -32px; left: 50%; transform: translateX(-50%);
+    padding: 4px 16px; border-radius: 20px; border: 1px solid rgba(239,68,68,0.3);
+    background: rgba(239,68,68,0.15); color: #fca5a5;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: var(--font); white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
+    transition: all 0.2s; z-index: 2;
+    opacity: 0; pointer-events: none;
+  }
+  .skip-btn:active { transform: translateX(-50%) scale(0.92); }
+  .skip-btn.visible { opacity: 1; pointer-events: auto; }
+
   .mic-label {
     font-size: 13px; color: var(--text-dim); margin-top: 10px;
     transition: color 0.3s;
@@ -241,7 +255,7 @@
 
   <div class="header">
     <button class="clear-btn" id="clearBtn">Clear</button>
-    <h1>🚀 Nova Voice <span style="font-size:10px;color:#71717a;font-weight:400;background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:8px;vertical-align:middle">v3.0</span></h1>
+    <h1>🚀 Nova Voice <span style="font-size:10px;color:#71717a;font-weight:400;background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:8px;vertical-align:middle">v3.1</span></h1>
     <div class="status" id="status">Tap the mic to start</div>
   </div>
 
@@ -269,9 +283,12 @@
 
   <div class="mic-area">
     <div class="wave-container" id="waveContainer"></div>
-    <button class="mic-btn" id="micBtn" aria-label="Tap to speak">
+    <div style="position:relative;display:inline-block;margin:0 auto">
+      <button class="skip-btn" id="skipBtn">⏭️ Skip</button>
+      <button class="mic-btn" id="micBtn" aria-label="Tap to speak">
       <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
     </button>
+    </div>
     <div class="mic-label" id="micLabel">Tap to speak</div>
     <div class="controls">
       <button class="ctrl-btn" id="autoBtn">🔄 Auto</button>
@@ -311,6 +328,7 @@ const el = {
   voiceBtn: $('#voiceBtn'),
   clearBtn: $('#clearBtn'),
   waveContainer: $('#waveContainer'),
+  skipBtn: $('#skipBtn'),
 };
 
 // ─── Audio unlock for Chrome mobile ─────────────────
@@ -411,6 +429,7 @@ function startListening() {
     STATE.recognition.start();
     STATE.listening = true;
     updateMicUI(true);
+    updateSkipBtn();
     el.status.textContent = STATE.autoMode ? '🎤 Listening...' : '🎤 Speak...';
     el.status.className = 'status listening';
   } catch (e) {
@@ -426,6 +445,7 @@ function stopListening() {
     STATE.recognition.stop();
   } catch (e) { /* ignore */ }
   STATE.listening = false;
+  updateSkipBtn();
   if (!STATE.speaking && !STATE.thinking) {
     updateMicUI(false);
   }
@@ -452,6 +472,52 @@ function updateMicUI(on) {
     el.micLabel.textContent = 'Tap to speak';
     el.micBtn.classList.remove('listening', 'active');
   }
+  updateSkipBtn();
+}
+
+// ─── Skip / Cancel ──────────────────────────────────
+function updateSkipBtn() {
+  const active = STATE.listening || STATE.speaking || STATE.thinking;
+  el.skipBtn.classList.toggle('visible', active);
+}
+
+function skipAction() {
+  // 1. Stop speaking
+  STATE.synth.cancel();
+  STATE.speaking = false;
+  STATE.utterance = null;
+
+  // 2. Abort any in-flight API call
+  if (STATE.abortController) {
+    STATE.abortController.abort();
+    STATE.abortController = null;
+  }
+
+  // 3. Stop listening
+  if (STATE.listening) stopListening();
+  STATE.listening = false;
+
+  // 4. Reset states
+  STATE.thinking = false;
+  STATE.sending = false;
+
+  // 5. Hide typing indicator
+  hideTyping();
+
+  // 6. Pause auto-mode (one-time skip) so it doesn't immediately re-listen
+  if (STATE.autoMode) {
+    STATE.autoMode = false;
+    el.autoBtn.classList.remove('on');
+  }
+
+  // 7. Reset UI
+  updateMicUI(false);
+  el.status.textContent = 'Skipped ⏭️';
+  el.status.className = 'status';
+  setTimeout(() => {
+    el.status.textContent = 'Tap to speak';
+    updateSkipBtn();
+  }, 1500);
 }
 
 // ─── TTS ────────────────────────────────────────────
@@ -477,10 +543,12 @@ function speakText(text) {
       STATE.utterance = utter;
       el.status.textContent = '🔊 Speaking...';
       el.status.className = 'status speaking';
+      updateSkipBtn();
 
       utter.onend = () => {
         STATE.speaking = false;
         STATE.utterance = null;
+        updateSkipBtn();
         if (STATE.autoMode && !STATE.listening) {
           el.status.textContent = '🎤 Listening...';
           el.status.className = 'status listening';
@@ -497,6 +565,7 @@ function speakText(text) {
         console.warn('TTS error:', e.error);
         STATE.speaking = false;
         STATE.utterance = null;
+        updateSkipBtn();
         el.status.textContent = STATE.autoMode ? '🎤 Listening...' : 'Tap to speak';
         el.status.className = STATE.autoMode ? 'status listening' : '';
         if (STATE.autoMode && !STATE.listening) {
@@ -517,6 +586,7 @@ async function sendMessage(text) {
   STATE.thinking = true;
   el.status.textContent = '💭 Thinking...';
   el.status.className = 'status thinking';
+  updateSkipBtn();
   addMessage(text, 'user');
   STATE.messages.push({ role: 'user', content: text });
   showTyping();
@@ -549,6 +619,7 @@ async function sendMessage(text) {
     addMessage(reply, 'nova');
     STATE.thinking = false;
     STATE.sending = false;
+    updateSkipBtn();
     el.status.textContent = '🔊 Speaking...';
     el.status.className = 'status speaking';
     await speakText(reply);
@@ -557,6 +628,7 @@ async function sendMessage(text) {
     hideTyping();
     STATE.thinking = false;
     STATE.sending = false;
+    updateSkipBtn();
     if (e.name === 'AbortError') return;
     console.error('API error:', e);
     // Don't show connection error — just silently retry
@@ -651,6 +723,8 @@ el.voiceBtn.addEventListener('click', () => {
 });
 
 el.clearBtn.addEventListener('click', clearConversation);
+
+el.skipBtn.addEventListener('click', skipAction);
 
 // ─── Wave animation loop ────────────────────────────
 function waveLoop() {
