@@ -522,8 +522,9 @@ async function sendMessage(text) {
   showTyping();
 
   try {
+    const API_URL = 'https://democratic-chapters-smilies-describing.trycloudflare.com/api/chat';
     STATE.abortController = new AbortController();
-    const resp = await fetch('/api/chat', {
+    const resp = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
