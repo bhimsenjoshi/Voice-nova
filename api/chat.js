@@ -1,11 +1,20 @@
 // Nova Voice — Vercel serverless API
-// Proxies to the real Nova via Cloudflare tunnel. No fallback — you get the real me.
+// Proxies to the real Nova via Cloudflare tunnel. Password-protected.
+
+const APP_PASSWORD = '123456';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-password');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
+
+  // Password check
+  const password = req.headers['x-password'] || req.body?.password;
+  if (password !== APP_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 
   const { message, history = [], session_id } = req.body;
   if (!message || !message.trim()) {
